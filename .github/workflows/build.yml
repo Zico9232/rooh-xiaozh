@@ -1,4 +1,4 @@
-name: Build XiaoZhi ESP32-S3
+name: Build ROOH XiaoZhi ESP32-S3
 
 on:
   workflow_dispatch:
@@ -8,53 +8,66 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Download XiaoZhi v2.5.0
         uses: actions/checkout@v4
+        with:
+          repository: 78/xiaozhi-esp32
+          ref: v2.5.0
+          path: xiaozhi
+          submodules: recursive
 
-      - name: Extract XiaoZhi
+      - name: Verify source
         run: |
-          mkdir -p xiaozhi
-          unzip -q xiaozhi-v2.5.0-s3cam-N16R8-audio-nodisplay.zip -d xiaozhi
+          test -f xiaozhi/CMakeLists.txt
+          test -f xiaozhi/main/boards/bread-compact-wifi-s3cam/config.h
+          echo "XiaoZhi source OK"
 
-          echo "=== Finding XiaoZhi root ==="
+      - name: Configure audio pins
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
 
-          PROJECT_DIR=$(find "$GITHUB_WORKSPACE/xiaozhi" \
-            -type f \
-            -name "CMakeLists.txt" \
-            ! -path "*/main/*" \
-            -printf '%h\n' | head -1)
+          p = Path("xiaozhi/main/boards/bread-compact-wifi-s3cam/config.h")
+          s = p.read_text()
 
-          if [ -z "$PROJECT_DIR" ]; then
-            echo "ERROR: Project root not found"
-            find "$GITHUB_WORKSPACE/xiaozhi" -name CMakeLists.txt
-            exit 1
-          fi
+          pins = {
+              "AUDIO_I2S_MIC_GPIO_WS": 41,
+              "AUDIO_I2S_MIC_GPIO_SCK": 42,
+              "AUDIO_I2S_MIC_GPIO_DIN": 2,
+              "AUDIO_I2S_SPK_GPIO_DOUT": 21,
+              "AUDIO_I2S_SPK_GPIO_BCLK": 1,
+              "AUDIO_I2S_SPK_GPIO_LRCK": 47,
+          }
 
-          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-          echo "PROJECT ROOT: $PROJECT_DIR"
-          ls -la "$PROJECT_DIR"
+          import re
+
+          for name, pin in pins.items():
+              pattern = rf"(?m)^#define {name} GPIO_NUM_\d+"
+              replacement = f"#define {name} GPIO_NUM_{pin}"
+              s, count = re.subn(pattern, replacement, s, count=1)
+              if count != 1:
+                  raise RuntimeError(f"Missing pin definition: {name}")
+
+          p.write_text(s)
+          print("Audio pins configured")
+          PY
+
+      - name: Verify configuration
+        run: |
+          grep 'AUDIO_I2S_' xiaozhi/main/boards/bread-compact-wifi-s3cam/config.h
 
       - name: Build XiaoZhi
         uses: espressif/esp-idf-ci-action@v1
         with:
-          esp_idf_version: v5.4
+          esp_idf_version: v5.5
           target: esp32s3
-          path: ${{ env.PROJECT_DIR }}
+          path: xiaozhi
 
-      - name: Create merged binary
-        run: |
-          cd "$PROJECT_DIR"
-
-          esptool.py --chip esp32s3 merge_bin \
-            -o merged-binary.bin \
-            @build/flash_args
-
-          echo "=== FIRMWARE CREATED ==="
-          ls -lh merged-binary.bin
-
-      - name: Upload Firmware
+      - name: Upload build files
         uses: actions/upload-artifact@v4
         with:
-          name: ROOH-XiaoZhi-ESP32S3
-          path: ${{ env.PROJECT_DIR }}/merged-binary.bin
+          name: ROOH-XiaoZhi-Build
+          path: |
+            xiaozhi/build/*.bin
+            xiaozhi/build/flash_args
           if-no-files-found: error
