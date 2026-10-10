@@ -1,17 +1,13 @@
-name: Inspect XiaoZhi Build Config
+name: Build ROOH XiaoZhi ESP32-S3
 
 on:
   workflow_dispatch:
 
 jobs:
-  inspect:
+  build:
     runs-on: ubuntu-latest
 
     steps:
-
-      # ==========================================
-      # 1. Download official XiaoZhi v2.5.0
-      # ==========================================
       - name: Download XiaoZhi v2.5.0
         uses: actions/checkout@v4
         with:
@@ -20,154 +16,145 @@ jobs:
           path: xiaozhi
           submodules: recursive
 
-
-      # ==========================================
-      # 2. Verify source
-      # ==========================================
-      - name: Verify source
+      - name: Verify board
         run: |
-          echo "Checking source..."
+          echo "=== BOARD ==="
+          cat xiaozhi/main/boards/bread-compact-wifi-s3cam/config.json
 
-          test -f xiaozhi/CMakeLists.txt
-          test -d xiaozhi/main/boards/bread-compact-wifi-s3cam
+          echo ""
+          echo "=== BOARD CMAKE ==="
+          grep -n -B5 -A10 \
+            'set(BOARD_DIR "bread-compact-wifi-s3cam")' \
+            xiaozhi/main/CMakeLists.txt
 
-          echo "SOURCE OK"
-
-
-      # ==========================================
-      # 3. Find CONFIG environment usage
-      # ==========================================
-      - name: Find CONFIG usage
+      - name: Configure ROOH audio pins
         run: |
-          echo ""
-          echo "======================================"
-          echo "WHERE CONFIG IS USED"
-          echo "======================================"
-          echo ""
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
 
-          grep -RIn \
-            --exclude-dir=.git \
-            --exclude-dir=build \
-            -E 'ENV\{CONFIG\}|\$ENV\{CONFIG\}|CONFIG=' \
-            xiaozhi || true
+          p = Path(
+              "xiaozhi/main/boards/bread-compact-wifi-s3cam/config.h"
+          )
 
+          if not p.exists():
+              raise SystemExit("ERROR: config.h not found")
 
-      # ==========================================
-      # 4. Show S3CAM board files
-      # ==========================================
-      - name: Show S3CAM board files
+          s = p.read_text()
+
+          pins = {
+              "AUDIO_I2S_MIC_GPIO_WS": 41,
+              "AUDIO_I2S_MIC_GPIO_SCK": 42,
+              "AUDIO_I2S_MIC_GPIO_DIN": 2,
+
+              "AUDIO_I2S_SPK_GPIO_DOUT": 21,
+              "AUDIO_I2S_SPK_GPIO_BCLK": 1,
+              "AUDIO_I2S_SPK_GPIO_LRCK": 47,
+          }
+
+          for name, pin in pins.items():
+
+              pattern = rf'(#define\s+{name}\s+)GPIO_NUM_\d+'
+
+              s, count = re.subn(
+                  pattern,
+                  rf'\g<1>GPIO_NUM_{pin}',
+                  s,
+                  count=1
+              )
+
+              if count != 1:
+                  raise SystemExit(
+                      f"ERROR: pin definition not found: {name}"
+                  )
+
+          p.write_text(s)
+
+          print("ROOH AUDIO PINS OK")
+          PY
+
+      - name: Show final audio pins
         run: |
-          echo ""
-          echo "======================================"
-          echo "S3CAM BOARD FILES"
-          echo "======================================"
-          echo ""
+          grep -nE \
+          'AUDIO_I2S_(MIC|SPK)_GPIO' \
+          xiaozhi/main/boards/bread-compact-wifi-s3cam/config.h
 
-          find \
-            xiaozhi/main/boards/bread-compact-wifi-s3cam \
-            -maxdepth 3 \
-            -type f \
-            -print
-
-
-      # ==========================================
-      # 5. Show board JSON / config files
-      # ==========================================
-      - name: Show board configuration
+      - name: Build XiaoZhi
+        id: build
+        continue-on-error: true
         run: |
-          echo ""
-          echo "======================================"
-          echo "S3CAM CONFIG CONTENT"
-          echo "======================================"
-          echo ""
+          mkdir -p logs
 
-          for f in \
-            xiaozhi/main/boards/bread-compact-wifi-s3cam/*.json \
-            xiaozhi/main/boards/bread-compact-wifi-s3cam/*.conf \
-            xiaozhi/main/boards/bread-compact-wifi-s3cam/*.config \
-            xiaozhi/main/boards/bread-compact-wifi-s3cam/*.h
-          do
-            if [ -f "$f" ]; then
+          docker run --rm \
+            -v "$PWD/xiaozhi:/project" \
+            -v "$PWD/logs:/logs" \
+            -w /project \
+            espressif/idf:v5.4 \
+            bash -lc '
+              set -o pipefail
+
+              . /opt/esp/idf/export.sh
+
+              echo "=============================="
+              echo "ESP-IDF"
+              echo "=============================="
+
+              idf.py --version
+
               echo ""
-              echo "--------------------------------------"
-              echo "FILE: $f"
-              echo "--------------------------------------"
-              cat "$f"
-            fi
-          done
+              echo "=============================="
+              echo "BUILDING"
+              echo "BOARD: bread-compact-wifi-s3cam"
+              echo "=============================="
 
+              python3 scripts/build.py \
+                bread-compact-wifi-s3cam \
+                2>&1 | tee /logs/build.log
+            '
 
-      # ==========================================
-      # 6. Inspect build scripts
-      # ==========================================
-      - name: Inspect build scripts
+      - name: Show build log
+        if: always()
         run: |
-          echo ""
-          echo "======================================"
-          echo "BUILD SCRIPTS"
-          echo "======================================"
-          echo ""
+          echo "================================"
+          echo "BUILD LOG"
+          echo "================================"
+
+          if [ -f logs/build.log ]; then
+              tail -n 250 logs/build.log
+          else
+              echo "No build.log found"
+          fi
+
+      - name: Find firmware
+        if: steps.build.outcome == 'success'
+        run: |
+          echo "================================"
+          echo "FIRMWARE"
+          echo "================================"
 
           find xiaozhi \
-            -maxdepth 3 \
             -type f \
             \( \
-              -name "build.py" \
-              -o -name "release.py" \
-              -o -name "*.sh" \
+              -name "merged-binary.bin" \
+              -o -name "*.bin" \
+              -o -name "*.zip" \
             \) \
             -print
 
+      - name: Upload firmware
+        if: steps.build.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ROOH-XiaoZhi-ESP32S3
+          path: |
+            xiaozhi/build/**/*.bin
+            xiaozhi/build/*.bin
+            xiaozhi/releases/**
+            logs/build.log
+          if-no-files-found: warn
 
-      # ==========================================
-      # 7. Search for S3CAM references
-      # ==========================================
-      - name: Find S3CAM references
+      - name: Stop if build failed
+        if: steps.build.outcome == 'failure'
         run: |
-          echo ""
-          echo "======================================"
-          echo "BREAD COMPACT WIFI S3CAM REFERENCES"
-          echo "======================================"
-          echo ""
-
-          grep -RIn \
-            --exclude-dir=.git \
-            --exclude-dir=build \
-            "bread-compact-wifi-s3cam" \
-            xiaozhi || true
-
-
-      # ==========================================
-      # 8. Search board selection logic
-      # ==========================================
-      - name: Find board selection logic
-        run: |
-          echo ""
-          echo "======================================"
-          echo "BOARD SELECTION LOGIC"
-          echo "======================================"
-          echo ""
-
-          grep -RIn \
-            --exclude-dir=.git \
-            --exclude-dir=build \
-            -E \
-            'BOARD_TYPE|BOARD_NAME|BOARD_CONFIG|CONFIG_BOARD|BOARD=' \
-            xiaozhi/scripts \
-            xiaozhi/main \
-            xiaozhi/CMakeLists.txt \
-            2>/dev/null | head -n 300 || true
-
-
-      # ==========================================
-      # 9. Finish
-      # ==========================================
-      - name: Inspection complete
-        run: |
-          echo ""
-          echo "======================================"
-          echo "INSPECTION COMPLETE"
-          echo "======================================"
-          echo ""
-          echo "No firmware was flashed."
-          echo "No build was attempted."
+          echo "XiaoZhi build failed."
+          exit 1
