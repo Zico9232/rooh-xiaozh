@@ -8,10 +8,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-
-      # ==========================================
-      # 1. Download official XiaoZhi v2.5.0
-      # ==========================================
+      # 1) Download XiaoZhi
       - name: Download XiaoZhi v2.5.0
         uses: actions/checkout@v4
         with:
@@ -20,37 +17,28 @@ jobs:
           path: xiaozhi
           submodules: recursive
 
-
-      # ==========================================
-      # 2. Verify source
-      # ==========================================
-      - name: Verify XiaoZhi source
+      # 2) Verify source
+      - name: Verify source
         run: |
           test -f xiaozhi/CMakeLists.txt
           test -f xiaozhi/main/boards/bread-compact-wifi-s3cam/config.h
 
-          echo "XiaoZhi source OK"
+          echo "SOURCE OK"
 
-
-      # ==========================================
-      # 3. Configure audio pins
-      # ==========================================
-      - name: Configure ROOH audio pins
+      # 3) Change audio GPIOs
+      - name: Configure ROOH audio
         run: |
           python3 - <<'PY'
           from pathlib import Path
           import re
 
-          config = Path(
-              "xiaozhi/main/boards/bread-compact-wifi-s3cam/config.h"
-          )
-
-          text = config.read_text()
+          p = Path("xiaozhi/main/boards/bread-compact-wifi-s3cam/config.h")
+          s = p.read_text()
 
           pins = {
-              "AUDIO_I2S_MIC_GPIO_WS":   41,
-              "AUDIO_I2S_MIC_GPIO_SCK":  42,
-              "AUDIO_I2S_MIC_GPIO_DIN":  2,
+              "AUDIO_I2S_MIC_GPIO_WS": 41,
+              "AUDIO_I2S_MIC_GPIO_SCK": 42,
+              "AUDIO_I2S_MIC_GPIO_DIN": 2,
 
               "AUDIO_I2S_SPK_GPIO_DOUT": 21,
               "AUDIO_I2S_SPK_GPIO_BCLK": 1,
@@ -58,43 +46,27 @@ jobs:
           }
 
           for name, pin in pins.items():
+              pattern = rf"(?m)^(\s*#define\s+{re.escape(name)}\s+)GPIO_NUM_\d+\s*$"
 
-              pattern = (
-                  rf"(?m)^(\s*#define\s+"
-                  rf"{re.escape(name)}"
-                  rf"\s+)GPIO_NUM_\d+\s*$"
-              )
-
-              replacement = rf"\g<1>GPIO_NUM_{pin}"
-
-              text, count = re.subn(
+              s, count = re.subn(
                   pattern,
-                  replacement,
-                  text,
+                  rf"\g<1>GPIO_NUM_{pin}",
+                  s,
                   count=1
               )
 
               if count != 1:
-                  raise RuntimeError(
-                      f"Could not configure {name}"
-                  )
+                  raise RuntimeError(f"Cannot change {name}")
 
-          config.write_text(text)
+          p.write_text(s)
 
-          print("================================")
-          print("ROOH AUDIO CONFIGURED")
-          print("================================")
+          print("AUDIO GPIO CONFIGURED")
           PY
 
-
-      # ==========================================
-      # 4. Verify audio configuration
-      # ==========================================
-      - name: Verify ROOH audio pins
+      # 4) Verify GPIOs
+      - name: Verify GPIOs
         run: |
-          echo "================================"
-          echo "ROOH AUDIO PINS"
-          echo "================================"
+          echo "========= AUDIO ========="
 
           grep -n \
             -E "AUDIO_I2S_MIC_GPIO|AUDIO_I2S_SPK_GPIO" \
@@ -102,65 +74,88 @@ jobs:
 
           echo ""
           echo "Expected:"
-          echo "MIC WS   = GPIO41"
-          echo "MIC SCK  = GPIO42"
-          echo "MIC DIN  = GPIO2"
+          echo "MIC WS   = 41"
+          echo "MIC SCK  = 42"
+          echo "MIC DIN  = 2"
+          echo "SPK DOUT = 21"
+          echo "SPK BCLK = 1"
+          echo "SPK LRCK = 47"
+
           echo ""
-          echo "SPK DOUT = GPIO21"
-          echo "SPK BCLK = GPIO1"
-          echo "SPK LRCK = GPIO47"
+          echo "========= CAMERA ========="
 
-
-      # ==========================================
-      # 5. Verify camera pins
-      # ==========================================
-      - name: Verify camera pins
-        run: |
-          echo "================================"
-          echo "CAMERA PINS"
-          echo "================================"
-
-          grep -n \
-            "CAMERA_PIN" \
+          grep -n "CAMERA_PIN" \
             xiaozhi/main/boards/bread-compact-wifi-s3cam/config.h
 
-
-      # ==========================================
-      # 6. Build directly inside ESP-IDF container
-      # ==========================================
-      - name: Build XiaoZhi firmware
+      # 5) Build
+      # continue-on-error allows us to print CMake logs
+      - name: Build XiaoZhi
+        id: build
+        continue-on-error: true
         uses: espressif/esp-idf-ci-action@v1
         with:
           esp_idf_version: v5.4
           target: esp32s3
           path: xiaozhi
 
-
-      # ==========================================
-      # 7. Show generated BIN files
-      # ==========================================
-      - name: Show firmware files
+      # 6) Automatically print actual error
+      - name: Show CMake error
+        if: steps.build.outcome == 'failure'
         run: |
-          echo "================================"
-          echo "BUILD OUTPUT"
-          echo "================================"
+          echo ""
+          echo "=========================================="
+          echo "XIAOZHI BUILD FAILED"
+          echo "SHOWING REAL CMAKE ERROR"
+          echo "=========================================="
+          echo ""
+
+          echo "---- STDERR ----"
+
+          find xiaozhi/build/log \
+            -type f \
+            -name "idf_py_stderr_output_*" \
+            -exec sh -c '
+              echo "FILE: $1"
+              cat "$1"
+            ' _ {} \; || true
+
+          echo ""
+          echo "---- STDOUT (LAST 200 LINES) ----"
+
+          for f in xiaozhi/build/log/idf_py_stdout_output_*; do
+            if [ -f "$f" ]; then
+              echo "FILE: $f"
+              tail -n 200 "$f"
+            fi
+          done
+
+          echo ""
+          echo "=========================================="
+          echo "END ERROR LOG"
+          echo "=========================================="
+
+          exit 1
+
+      # 7) List firmware if successful
+      - name: Show firmware files
+        if: steps.build.outcome == 'success'
+        run: |
+          echo "=========================================="
+          echo "BUILD SUCCESS"
+          echo "=========================================="
 
           find xiaozhi/build \
-            -maxdepth 3 \
             -type f \
             \( -name "*.bin" -o -name "flash_args" \) \
             -print
 
-
-      # ==========================================
-      # 8. Upload complete build
-      # ==========================================
-      - name: Upload XiaoZhi build
+      # 8) Upload build
+      - name: Upload firmware
+        if: steps.build.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
-          name: ROOH-XiaoZhi-ESP32S3-Build
+          name: ROOH-XiaoZhi-ESP32S3
           path: |
             xiaozhi/build/*.bin
             xiaozhi/build/flash_args
-            xiaozhi/build/flash_args.in
           if-no-files-found: error
