@@ -1,10 +1,10 @@
-name: Build ROOH XiaoZhi ESP32-S3
+name: Find CONFIG Error Source
 
 on:
   workflow_dispatch:
 
 jobs:
-  build:
+  inspect:
     runs-on: ubuntu-latest
 
     steps:
@@ -16,72 +16,36 @@ jobs:
           path: xiaozhi
           submodules: recursive
 
-      - name: Verify board
+      - name: Find CONFIG references
         run: |
-          echo "=== BOARD ==="
-          cat xiaozhi/main/boards/bread-compact-wifi-s3cam/config.json
+          echo "========================================"
+          echo "SEARCHING PROJECT FOR CONFIG"
+          echo "========================================"
 
-          echo ""
-          echo "=== BOARD CMAKE ==="
-          grep -n -B5 -A10 \
-            'set(BOARD_DIR "bread-compact-wifi-s3cam")' \
-            xiaozhi/main/CMakeLists.txt
+          grep -RIn \
+            --exclude-dir=.git \
+            --exclude-dir=build \
+            -E 'CONFIG.*environment|environment.*CONFIG|getenv.*CONFIG|ENV\{CONFIG\}|\$ENV\{CONFIG\}' \
+            xiaozhi || true
 
-      - name: Configure ROOH audio pins
+      - name: Check manifests
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
+          echo "========================================"
+          echo "SEARCHING COMPONENT MANIFESTS"
+          echo "========================================"
 
-          p = Path(
-              "xiaozhi/main/boards/bread-compact-wifi-s3cam/config.h"
-          )
+          find xiaozhi \
+            \( -name "idf_component.yml" -o -name "idf_component.yaml" \) \
+            -print0 |
+          while IFS= read -r -d '' f; do
+            echo ""
+            echo "===== $f ====="
+            grep -n -Ei \
+              'CONFIG|rules|if:|matches|dependencies' \
+              "$f" || true
+          done
 
-          if not p.exists():
-              raise SystemExit("ERROR: config.h not found")
-
-          s = p.read_text()
-
-          pins = {
-              "AUDIO_I2S_MIC_GPIO_WS": 41,
-              "AUDIO_I2S_MIC_GPIO_SCK": 42,
-              "AUDIO_I2S_MIC_GPIO_DIN": 2,
-
-              "AUDIO_I2S_SPK_GPIO_DOUT": 21,
-              "AUDIO_I2S_SPK_GPIO_BCLK": 1,
-              "AUDIO_I2S_SPK_GPIO_LRCK": 47,
-          }
-
-          for name, pin in pins.items():
-
-              pattern = rf'(#define\s+{name}\s+)GPIO_NUM_\d+'
-
-              s, count = re.subn(
-                  pattern,
-                  rf'\g<1>GPIO_NUM_{pin}',
-                  s,
-                  count=1
-              )
-
-              if count != 1:
-                  raise SystemExit(
-                      f"ERROR: pin definition not found: {name}"
-                  )
-
-          p.write_text(s)
-
-          print("ROOH AUDIO PINS OK")
-          PY
-
-      - name: Show final audio pins
-        run: |
-          grep -nE \
-          'AUDIO_I2S_(MIC|SPK)_GPIO' \
-          xiaozhi/main/boards/bread-compact-wifi-s3cam/config.h
-
-      - name: Build XiaoZhi
-        id: build
-        continue-on-error: true
+      - name: Reproduce dependency error
         run: |
           mkdir -p logs
 
@@ -92,69 +56,35 @@ jobs:
             espressif/idf:v5.4 \
             bash -lc '
               set -o pipefail
-
               . /opt/esp/idf/export.sh
 
-              echo "=============================="
-              echo "ESP-IDF"
-              echo "=============================="
-
-              idf.py --version
-
-              echo ""
-              echo "=============================="
-              echo "BUILDING"
-              echo "BOARD: bread-compact-wifi-s3cam"
-              echo "=============================="
-
-              python3 scripts/build.py \
-                bread-compact-wifi-s3cam \
-                2>&1 | tee /logs/build.log
+              python3 scripts/build.py bread-compact-wifi-s3cam \
+                2>&1 | tee /logs/build.log || true
             '
 
-      - name: Show build log
-        if: always()
+      - name: Extract CONFIG error context
         run: |
-          echo "================================"
-          echo "BUILD LOG"
-          echo "================================"
+          echo ""
+          echo "========================================"
+          echo "CONFIG ERROR CONTEXT"
+          echo "========================================"
 
-          if [ -f logs/build.log ]; then
-              tail -n 250 logs/build.log
-          else
-              echo "No build.log found"
-          fi
+          grep -n -B30 -A20 \
+            'Environment variable "CONFIG"' \
+            logs/build.log || true
 
-      - name: Find firmware
-        if: steps.build.outcome == 'success'
-        run: |
-          echo "================================"
-          echo "FIRMWARE"
-          echo "================================"
+          echo ""
+          echo "========================================"
+          echo "DEPENDENCY / MANIFEST ERRORS"
+          echo "========================================"
 
-          find xiaozhi \
-            -type f \
-            \( \
-              -name "merged-binary.bin" \
-              -o -name "*.bin" \
-              -o -name "*.zip" \
-            \) \
-            -print
+          grep -n -B10 -A15 -Ei \
+            'manifest|dependency|CONFIG|CMake Error|ERROR:' \
+            logs/build.log | tail -n 300 || true
 
-      - name: Upload firmware
-        if: steps.build.outcome == 'success'
+      - name: Upload diagnostic log
         uses: actions/upload-artifact@v4
         with:
-          name: ROOH-XiaoZhi-ESP32S3
-          path: |
-            xiaozhi/build/**/*.bin
-            xiaozhi/build/*.bin
-            xiaozhi/releases/**
-            logs/build.log
-          if-no-files-found: warn
-
-      - name: Stop if build failed
-        if: steps.build.outcome == 'failure'
-        run: |
-          echo "XiaoZhi build failed."
-          exit 1
+          name: XiaoZhi-CONFIG-Diagnostic
+          path: logs/build.log
+          if-no-files-found: error
