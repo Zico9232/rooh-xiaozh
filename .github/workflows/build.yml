@@ -8,29 +8,33 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Unzip XiaoZhi source
+      - name: Extract XiaoZhi
         run: |
           mkdir -p xiaozhi
           unzip -q xiaozhi-v2.5.0-s3cam-N16R8-audio-nodisplay.zip -d xiaozhi
-          echo "=== Extracted files ==="
-          ls -la xiaozhi
 
-      - name: Find project directory
-        run: |
-          PROJECT_DIR=$(find "$GITHUB_WORKSPACE/xiaozhi" -type f -name "CMakeLists.txt" -printf '%h\n' | head -1)
+          echo "=== Finding XiaoZhi root ==="
+
+          PROJECT_DIR=$(find "$GITHUB_WORKSPACE/xiaozhi" \
+            -type f \
+            -name "CMakeLists.txt" \
+            ! -path "*/main/*" \
+            -printf '%h\n' | head -1)
 
           if [ -z "$PROJECT_DIR" ]; then
-            echo "ERROR: XiaoZhi project not found"
+            echo "ERROR: Project root not found"
+            find "$GITHUB_WORKSPACE/xiaozhi" -name CMakeLists.txt
             exit 1
           fi
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-          echo "Project found at: $PROJECT_DIR"
+          echo "PROJECT ROOT: $PROJECT_DIR"
+          ls -la "$PROJECT_DIR"
 
-      - name: Build with ESP-IDF
+      - name: Build XiaoZhi
         uses: espressif/esp-idf-ci-action@v1
         with:
           esp_idf_version: v5.4
@@ -41,16 +45,16 @@ jobs:
         run: |
           cd "$PROJECT_DIR"
 
-          python "$IDF_PATH/components/esptool_py/esptool/esptool.py" \
-            --chip esp32s3 merge_bin \
+          esptool.py --chip esp32s3 merge_bin \
             -o merged-binary.bin \
             @build/flash_args
 
+          echo "=== FIRMWARE CREATED ==="
           ls -lh merged-binary.bin
 
-      - name: Upload merged firmware
+      - name: Upload Firmware
         uses: actions/upload-artifact@v4
         with:
-          name: xiaozhi-s3cam-firmware
+          name: ROOH-XiaoZhi-ESP32S3
           path: ${{ env.PROJECT_DIR }}/merged-binary.bin
           if-no-files-found: error
