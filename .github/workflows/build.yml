@@ -22,12 +22,10 @@ jobs:
 
 
       # ==========================================
-      # 2. Verify project
+      # 2. Verify source
       # ==========================================
       - name: Verify XiaoZhi source
         run: |
-          echo "Checking XiaoZhi source..."
-
           test -f xiaozhi/CMakeLists.txt
           test -f xiaozhi/main/boards/bread-compact-wifi-s3cam/config.h
 
@@ -35,12 +33,11 @@ jobs:
 
 
       # ==========================================
-      # 3. Configure our audio pins
+      # 3. Configure audio pins
       # ==========================================
       - name: Configure ROOH audio pins
         run: |
           python3 - <<'PY'
-
           from pathlib import Path
           import re
 
@@ -49,7 +46,6 @@ jobs:
           )
 
           text = config.read_text()
-
 
           pins = {
               "AUDIO_I2S_MIC_GPIO_WS":   41,
@@ -61,7 +57,6 @@ jobs:
               "AUDIO_I2S_SPK_GPIO_LRCK": 47,
           }
 
-
           for name, pin in pins.items():
 
               pattern = (
@@ -70,9 +65,7 @@ jobs:
                   rf"\s+)GPIO_NUM_\d+\s*$"
               )
 
-              replacement = (
-                  rf"\g<1>GPIO_NUM_{pin}"
-              )
+              replacement = rf"\g<1>GPIO_NUM_{pin}"
 
               text, count = re.subn(
                   pattern,
@@ -86,52 +79,46 @@ jobs:
                       f"Could not configure {name}"
                   )
 
-
           config.write_text(text)
 
-          print("")
-          print("==============================")
+          print("================================")
           print("ROOH AUDIO CONFIGURED")
-          print("==============================")
-
+          print("================================")
           PY
 
 
       # ==========================================
-      # 4. Verify pins
+      # 4. Verify audio configuration
       # ==========================================
-      - name: Verify ROOH audio configuration
+      - name: Verify ROOH audio pins
         run: |
-          echo ""
-          echo "========================================"
-          echo "MICROPHONE"
-          echo "Expected:"
-          echo "WS   = GPIO41"
-          echo "SCK  = GPIO42"
-          echo "DIN  = GPIO2"
-          echo ""
-          echo "SPEAKER"
-          echo "Expected:"
-          echo "DOUT = GPIO21"
-          echo "BCLK = GPIO1"
-          echo "LRCK = GPIO47"
-          echo "========================================"
-          echo ""
+          echo "================================"
+          echo "ROOH AUDIO PINS"
+          echo "================================"
 
           grep -n \
             -E "AUDIO_I2S_MIC_GPIO|AUDIO_I2S_SPK_GPIO" \
             xiaozhi/main/boards/bread-compact-wifi-s3cam/config.h
 
+          echo ""
+          echo "Expected:"
+          echo "MIC WS   = GPIO41"
+          echo "MIC SCK  = GPIO42"
+          echo "MIC DIN  = GPIO2"
+          echo ""
+          echo "SPK DOUT = GPIO21"
+          echo "SPK BCLK = GPIO1"
+          echo "SPK LRCK = GPIO47"
+
 
       # ==========================================
-      # 5. Show camera configuration
+      # 5. Verify camera pins
       # ==========================================
       - name: Verify camera pins
         run: |
-          echo ""
-          echo "========================================"
-          echo "CAMERA CONFIGURATION"
-          echo "========================================"
+          echo "================================"
+          echo "CAMERA PINS"
+          echo "================================"
 
           grep -n \
             "CAMERA_PIN" \
@@ -139,32 +126,7 @@ jobs:
 
 
       # ==========================================
-      # 6. Configure ESP32-S3 target
-      # ==========================================
-      - name: Configure ESP32-S3
-        working-directory: xiaozhi
-        run: |
-          idf.py set-target esp32s3
-
-
-      # ==========================================
-      # 7. Try selecting S3CAM board
-      # ==========================================
-      - name: Configure XiaoZhi S3CAM board
-        working-directory: xiaozhi
-        run: |
-          echo "Looking for board configuration tools..."
-
-          if [ -f scripts/release.py ]; then
-            python3 scripts/release.py bread-compact-wifi-s3cam || true
-          fi
-
-          echo ""
-          echo "Board preparation finished"
-
-
-      # ==========================================
-      # 8. Build firmware
+      # 6. Build directly inside ESP-IDF container
       # ==========================================
       - name: Build XiaoZhi firmware
         uses: espressif/esp-idf-ci-action@v1
@@ -175,75 +137,30 @@ jobs:
 
 
       # ==========================================
-      # 9. Inspect build output
+      # 7. Show generated BIN files
       # ==========================================
       - name: Show firmware files
         run: |
-          echo ""
-          echo "========================================"
-          echo "BUILD FILES"
-          echo "========================================"
+          echo "================================"
+          echo "BUILD OUTPUT"
+          echo "================================"
 
           find xiaozhi/build \
             -maxdepth 3 \
             -type f \
-            \( \
-              -name "*.bin" \
-              -o \
-              -name "flash_args" \
-            \) \
+            \( -name "*.bin" -o -name "flash_args" \) \
             -print
 
 
       # ==========================================
-      # 10. Create merged-binary.bin
+      # 8. Upload complete build
       # ==========================================
-      - name: Create merged binary
-        working-directory: xiaozhi
-        run: |
-          echo ""
-          echo "========================================"
-          echo "CREATING MERGED FIRMWARE"
-          echo "========================================"
-
-          if [ ! -f build/flash_args ]; then
-            echo "ERROR: build/flash_args not found"
-            exit 1
-          fi
-
-          python3 -m esptool \
-            --chip esp32s3 \
-            merge_bin \
-            -o merged-binary.bin \
-            @build/flash_args
-
-          echo ""
-          echo "========================================"
-          echo "MERGED BINARY CREATED"
-          echo "========================================"
-
-          ls -lh merged-binary.bin
-
-
-      # ==========================================
-      # 11. Upload merged firmware
-      # ==========================================
-      - name: Upload ROOH merged firmware
+      - name: Upload XiaoZhi build
         uses: actions/upload-artifact@v4
         with:
-          name: ROOH-XiaoZhi-ESP32S3-N16R8
-          path: xiaozhi/merged-binary.bin
-          if-no-files-found: error
-
-
-      # ==========================================
-      # 12. Upload complete build as backup
-      # ==========================================
-      - name: Upload complete build
-        uses: actions/upload-artifact@v4
-        with:
-          name: ROOH-XiaoZhi-Full-Build
+          name: ROOH-XiaoZhi-ESP32S3-Build
           path: |
             xiaozhi/build/*.bin
             xiaozhi/build/flash_args
-          if-no-files-found: warn
+            xiaozhi/build/flash_args.in
+          if-no-files-found: error
