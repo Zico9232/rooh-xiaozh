@@ -91,10 +91,8 @@ jobs:
               echo "ESP-IDF VERSION:"
               idf.py --version
 
-              echo "STARTING BUILD"
-
-              idf.py -DIDF_TARGET=esp32s3 build \
-                2>&1 | tee /logs/build.log
+              echo "STARTING BUILD SCRIPT"
+              python scripts/build.py bread-compact-wifi-s3cam 2>&1 | tee /logs/build.log
             '
 
       - name: Show exact errors
