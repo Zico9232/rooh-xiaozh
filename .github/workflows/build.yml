@@ -1,10 +1,10 @@
-name: Check XiaoZhi S3CAM Config
+name: Build ROOH XiaoZhi ESP32-S3
 
 on:
   workflow_dispatch:
 
 jobs:
-  check:
+  build:
     runs-on: ubuntu-latest
 
     steps:
@@ -16,55 +16,100 @@ jobs:
           path: xiaozhi
           submodules: recursive
 
-      - name: Check source
+      - name: Configure ROOH audio pins
         run: |
-          echo "===== XiaoZhi Source ====="
-          ls -la xiaozhi
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
 
-      - name: Find bread compact S3CAM board
+          p = Path("xiaozhi/main/boards/bread-compact-wifi-s3cam/config.h")
+          s = p.read_text()
+
+          replacements = {
+              "AUDIO_I2S_MIC_GPIO_WS":   41,
+              "AUDIO_I2S_MIC_GPIO_SCK":  42,
+              "AUDIO_I2S_MIC_GPIO_DIN":  2,
+
+              "AUDIO_I2S_SPK_GPIO_DOUT": 21,
+              "AUDIO_I2S_SPK_GPIO_BCLK": 1,
+              "AUDIO_I2S_SPK_GPIO_LRCK": 47,
+          }
+
+          for name, pin in replacements.items():
+              pattern = rf"(?m)^(\s*#define\s+{name}\s+)GPIO_NUM_\d+\s*$"
+
+              s, count = re.subn(
+                  pattern,
+                  rf"\g<1>GPIO_NUM_{pin}",
+                  s,
+                  count=1
+              )
+
+              if count != 1:
+                  raise RuntimeError(
+                      f"Could not modify {name}"
+                  )
+
+          p.write_text(s)
+
+          print("ROOH AUDIO CONFIGURATION COMPLETE")
+          PY
+
+      - name: Verify ROOH pins
         run: |
-          echo "===== Searching for S3CAM config ====="
+          echo "================================"
+          echo "ROOH AUDIO PINS"
+          echo "================================"
 
-          find xiaozhi/main/boards \
+          grep -n \
+            -E "AUDIO_I2S_MIC_GPIO|AUDIO_I2S_SPK_GPIO" \
+            xiaozhi/main/boards/bread-compact-wifi-s3cam/config.h
+
+      - name: Configure board
+        working-directory: xiaozhi
+        run: |
+          python3 scripts/release.py bread-compact-wifi-s3cam || true
+
+          echo "Board configuration attempted"
+
+      - name: Build XiaoZhi
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.4
+          target: esp32s3
+          path: xiaozhi
+
+      - name: Show build output
+        run: |
+          echo "================================"
+          echo "BUILD OUTPUT"
+          echo "================================"
+
+          find xiaozhi/build \
+            -maxdepth 2 \
             -type f \
-            \( -name "config.h" -o -name "board_config.h" \) \
-            | grep -Ei "bread|s3cam|camera" || true
+            \( -name "*.bin" -o -name "flash_args" \) \
+            -print
 
-      - name: Show S3CAM configuration
+      - name: Create merged firmware
+        working-directory: xiaozhi
         run: |
-          CONFIG=$(find xiaozhi/main/boards \
-            -type f \
-            \( -name "config.h" -o -name "board_config.h" \) \
-            | grep "bread-compact-wifi-s3cam" \
-            | head -1)
-
-          echo "CONFIG FILE:"
-          echo "$CONFIG"
-
-          if [ -z "$CONFIG" ]; then
-            echo "ERROR: S3CAM configuration file not found"
-            exit 1
-          fi
+          python3 -m esptool \
+            --chip esp32s3 \
+            merge_bin \
+            -o merged-binary.bin \
+            @build/flash_args
 
           echo ""
-          echo "===== FULL CONFIG ====="
-          cat "$CONFIG"
+          echo "================================"
+          echo "MERGED FIRMWARE READY"
+          echo "================================"
 
-          echo ""
-          echo "===== AUDIO DEFINITIONS ====="
+          ls -lh merged-binary.bin
 
-          grep -n -Ei \
-            "AUDIO|I2S|MIC|SPK|SPEAKER|BCLK|LRCK|LRC|DOUT|DIN|WS|SCK" \
-            "$CONFIG" || true
-
-          echo ""
-          echo "===== CAMERA DEFINITIONS ====="
-
-          grep -n -Ei \
-            "CAM|CAMERA|XCLK|PCLK|VSYNC|HREF|SIOD|SIOC" \
-            "$CONFIG" || true
-
-          echo ""
-          echo "===== END ====="
-
-          exit 1
+      - name: Upload ROOH firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: ROOH-XiaoZhi-ESP32S3-N16R8
+          path: xiaozhi/merged-binary.bin
+          if-no-files-found: error
